@@ -1,13 +1,3 @@
-# Drag and Drop RAG
-
-## Overview
-
-![Application Screenshot](https://storage.googleapis.com/mle-courses-prod/users/61b6fa1ba83a7e37c8309756/private-files/cf0ae020-8b6c-11ef-b095-cf36210a4279-Screen_Shot_2024_10_16_at_10.14.27.png)
-
-[Watch Video Demo](https://www.youtube.com/watch?v=VjVHAfFvnQM&feature=youtu.be)
-
-This project implements a **Retrieval-Augmented Generation (RAG)** pipeline, enabling users to upload various data files (CSV, JSON, PDF, DOCX), store their content in a **Chroma vector store**, and interact with it via a chatbot. The chatbot is powered by **Gemini**, **OpenAI**, or local models accessible through **OLLAMA**, retrieving relevant information and using **Large Language Models (LLMs)** to enhance responses based on user queries. Additionally, the app provides an **experimental Graph RAG** feature for visualizing data connections.
-
 ## Features
 1. **Flexible File Upload** – Supports uploading CSV, JSON, PDF, and DOCX files, allowing users to choose which columns or sections to index.
 2. **Chroma-based Storage and Retrieval** – Uses **Chroma** to store vector embeddings and perform efficient vector-based searches.
@@ -20,8 +10,7 @@ This project implements a **Retrieval-Augmented Generation (RAG)** pipeline, ena
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/bangoc123/drop-rag.git
-cd drop-rag
+cd RAG_template
 ```
 
 ### 2. Install Dependencies

@@ -5,7 +5,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sentence_transformers import SentenceTransformer
 
 
-class ProtonxSemanticChunker(BaseChunker):
+class SemanticChunker(BaseChunker):
     def __init__(self, threshold=0.3, embedding_type="tfidf", model="all-MiniLM-L6-v2"):
         self.threshold = threshold
         self.embedding_type = embedding_type

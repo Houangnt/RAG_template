@@ -7,8 +7,8 @@ from sentence_transformers import SentenceTransformer
 import chromadb
 import google.generativeai as genai
 from IPython.display import Markdown
-from chunking import RecursiveTokenChunker, LLMAgenticChunker, ProtonxSemanticChunker
-from utils import process_batch, divide_dataframe
+from chunking import RecursiveTokenChunker, LLMAgenticChunker, SemanticChunker
+from utils import process_batch, divide_dataframe, clean_collection_name
 from search import vector_search, keywords_search, hyde_search
 from llms.localLllms import run_ollama_container, run_ollama_model, OLLAMA_MODEL_OPTIONS, GGUF_MODEL_OPTIONS
 from llms.onlinellms import OnlineLLMs
@@ -17,12 +17,14 @@ import pdfplumber  # PDF extraction
 import io
 from docx import Document  # DOCX extraction
 from components import notify
-from constant import NO_CHUNKING, EN, VI, USER, ASSISTANT, ENGLISH, VIETNAMESE, ONLINE_LLM, LOCAL_LLM, GEMINI, DEFAULT_LOCAL_LLM, OPENAI
+from constant import NO_CHUNKING, EN, VI, NONE, USER, ASSISTANT, ENGLISH, VIETNAMESE, ONLINE_LLM, LOCAL_LLM, GEMINI, DEFAULT_LOCAL_LLM, OPENAI, DB
 from graph_rag import GraphRAG
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.schema import Document as langchainDocument
 from langchain_openai import ChatOpenAI
-
+from collection_management import list_collection
+from dotenv import load_dotenv
+load_dotenv()
 
 def clear_session_state():
     for key in st.session_state.keys():
@@ -34,17 +36,20 @@ def clear_session_state():
 #     clear_session_state()
 #     st.success("Session state has been cleared successfully!")
 
+llm_options = {
+    "Online": "Online",
+    "Local (Ollama)": "Local (Ollama)"
+}
 
 
 # Initialize the page
 st.header("Drag and Drop RAG")
 st.markdown("Design your own chatbot using the RAG system.")
-st.logo("https://storage.googleapis.com/mle-courses-prod/users/61b6fa1ba83a7e37c8309756/private-files/678dadd0-603b-11ef-b0a7-998b84b38d43-ProtonX_logo_horizontally__1_.png")
 
 
 # --- Initialize session state for language choice and model embedding
 if "language" not in st.session_state:
-    st.session_state.language = EN  # Default language is English
+    st.session_state.language = None  # Default language is English
 if "embedding_model" not in st.session_state:
     st.session_state.embedding_model = None  # Placeholder for the embedding model
 
@@ -66,32 +71,29 @@ if "collection" not in st.session_state:
 if "search_option" not in st.session_state:
     st.session_state.search_option = "Vector Search"
 
+if "open_dialog" not in st.session_state:
+    st.session_state.open_dialog = None
+
+if "source_data" not in st.session_state:
+    st.session_state.source_data = "UPLOAD"
+
+if "chunks_df" not in st.session_state:
+    st.session_state.chunks_df = pd.DataFrame()
+
+if "random_collection_name" not in st.session_state:
+    st.session_state.random_collection_name = None
+
+if "chunk_size" not in st.session_state:
+    st.session_state.chunk_size = 200
+
+if "chunk_overlap" not in st.session_state:
+    st.session_state.chunk_overlap = 10
+
 # --- End of initialization
 
-# Language selection popup
-st.sidebar.subheader("Choose Language")
-language_choice = st.sidebar.radio("Select language:", [ENGLISH, VIETNAMESE])
 
-# Switch embedding model based on language choice
-if language_choice == ENGLISH:
-    if st.session_state.language and st.session_state.language != EN:
-        st.session_state.language = EN
-        st.session_state.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        st.session_state.embedding_model_name = 'all-MiniLM-L6-v2'
-        st.sidebar.success("Using English embedding model: all-MiniLM-L6-v2")
-    else:
-        st.session_state.language = EN
-        st.session_state.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        st.sidebar.success("Using English embedding model: all-MiniLM-L6-v2")
-        st.session_state.embedding_model_name = 'all-MiniLM-L6-v2'
-
-elif language_choice == VIETNAMESE:
-    if st.session_state.language and st.session_state.language != VI:
-        st.session_state.language = VI
-        st.session_state.embedding_model = SentenceTransformer('keepitreal/vietnamese-sbert')
-        st.sidebar.success("Using Vietnamese embedding model: keepitreal/vietnamese-sbert")
-        st.session_state.embedding_model_name = 'keepitreal/vietnamese-sbert'
-
+if "graph_query" not in st.session_state:
+    st.session_state.graph_query = """MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 100"""
 
 # Sidebar settings
 st.sidebar.header("Settings")
@@ -99,12 +101,23 @@ st.sidebar.header("Settings")
 # Chunk size input
 st.session_state.chunk_size = st.sidebar.number_input(
     "Chunk Size",
-    min_value=50, 
+    min_value=10, 
     max_value=1000, 
     value=200, 
-    step=50, 
-    help="Set the size of each chunk in terms of tokens."
+    step=10, 
+    help="Set the size of each chunk in terms of tokens.",
+
 )
+st.session_state.chunk_overlap = st.sidebar.number_input(
+    "Chunk Overlap",
+    min_value=0, 
+    max_value=1000, 
+    step=10, 
+    value=st.session_state.chunk_size // 10,
+    help="Set the size of each chunk in terms of tokens.",
+
+)
+
 
 st.session_state.number_docs_retrieval = st.sidebar.number_input(
     "Number of documnents retrieval", 
@@ -115,34 +128,63 @@ st.session_state.number_docs_retrieval = st.sidebar.number_input(
     help="Set the number of document which will be retrieved."
 )
 
-
-
-
-# Check if the collection exists, if not, create a new one
-if st.session_state.collection is None:
-    st.session_state.random_collection_name = f"rag_collection_{uuid.uuid4().hex[:8]}"
-    st.session_state.collection = st.session_state.client.get_or_create_collection(
-        name=st.session_state.random_collection_name,
-        metadata={"description": "A collection for RAG system"},
+header_i = 1
+# Language selection popup
+header_text = "{}. Setup Language".format(header_i)
+st.header(header_text)
+language_choice = st.radio(
+    "Select language:", [
+        NONE,
+        ENGLISH, 
+        VIETNAMESE
+    ],
+    index=0
     )
+
+# Switch embedding model based on language choice
+if language_choice == ENGLISH:
+    if st.session_state.get("language") != EN:
+        st.session_state.language = EN
+        # Only load the model if it hasn't been loaded before
+        if st.session_state.get("embedding_model_name") != 'all-MiniLM-L6-v2':
+            st.session_state.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            st.session_state.embedding_model_name = 'all-MiniLM-L6-v2'
+        st.success("Using English embedding model: all-MiniLM-L6-v2")
+
+elif language_choice == VIETNAMESE:
+    if st.session_state.get("language") != VI:
+        st.session_state.language = VI
+        # Only load the model if it hasn't been loaded before
+        if st.session_state.get("embedding_model_name") != 'keepitreal/vietnamese-sbert':
+            st.session_state.embedding_model = SentenceTransformer('keepitreal/vietnamese-sbert')
+            st.session_state.embedding_model_name = 'keepitreal/vietnamese-sbert'
+        st.success("Using Vietnamese embedding model: keepitreal/vietnamese-sbert")
+
 
 
 # Step 1: File Upload (CSV, JSON, PDF, or DOCX) and Column Detection
-st.subheader("Upload data", divider=True)
+
+header_i += 1
+st.header(f"{header_i}. Setup data source")
+st.subheader(f"{header_i}.1. Upload data ", divider=True)
 uploaded_files = st.file_uploader(
     "Upload CSV, JSON, PDF, or DOCX files", 
-    type=["csv", "json", "pdf", "docx"], 
+    # type=["csv", "json", "pdf", "docx"], 
     accept_multiple_files=True
 )
 
 # Initialize a variable for tracking the success of saving the data
 st.session_state.data_saved_success = False
 
-# Ensure `df` is only accessed if it's been created and has columns
+
+
+
+
 if uploaded_files is not None:
     all_data = []
     
     for uploaded_file in uploaded_files:
+        print(uploaded_file.type)
         # Determine file type and read accordingly
         if uploaded_file.name.endswith(".csv"):
             df = pd.read_csv(uploaded_file)
@@ -172,6 +214,20 @@ if uploaded_files is not None:
             # Convert DOCX text into a DataFrame (assuming one column for simplicity)
             df = pd.DataFrame({"content": docx_text})
             all_data.append(df)
+        elif uploaded_file.name.endswith(".xlsx") or uploaded_file.type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            # Read Excel file
+            try:
+                df = pd.read_excel(
+                    uploaded_file,
+                    engine="openpyxl"
+                    )
+                all_data.append(df)
+            except Exception as e:
+                st.error(f"Error reading file: {str(e)}")
+        else:
+            st.error("Unsupported file format.")
+
+
 
     # Concatenate all data into a single DataFrame
     if all_data:
@@ -205,10 +261,10 @@ if uploaded_files is not None:
         ]
 
         # Step 4: Chunking options
-        if not st.session_state.get("llm_api_key") and st.session_state.get("chunkOption") == "AgenticChunker":
+        if st.session_state.get("llm_choice") == llm_options["Online"] and not st.session_state.get("llm_api_key") and st.session_state.get("chunkOption") == "AgenticChunker":
             currentChunkerIdx = 0
             st.session_state.chunkOption = NO_CHUNKING
-            notify("You have to setup the GEMINI API KEY FIRST in the Setup LLM Section", "error")
+            # notify("You have to setup the GEMINI API KEY FIRST in the Setup LLM Section for using Online Agentic Chunker", "error")
         elif not st.session_state.get("chunkOption"):
             currentChunkerIdx = 0
             st.session_state.chunkOption = NO_CHUNKING
@@ -222,7 +278,7 @@ if uploaded_files is not None:
                 "Keep the original document",
                 "Recursively chunks text into smaller, meaningful token groups based on specific rules or criteria.",
                 "Chunking with semantic comparison between chunks",
-                "Let LLM decide chunking (requires Gemini API)"
+                "Let LLM decide chunking"
             ],
             key="chunkOption",
             index=currentChunkerIdx
@@ -236,6 +292,13 @@ if uploaded_files is not None:
                 ["TF-IDF", "Sentence-Transformers"]
             )
         chunk_records = []
+
+        if chunkOption == "AgenticChunker":
+            if st.session_state.get("llm_choice") == llm_options["Online"] and not st.session_state.get("llm_api_key"):
+                st.warning("You have to setup the LLMs first in LLM Section")
+            elif st.session_state.get("llm_choice") == llm_options["Local (Ollama)" ]:
+                st.warning("We only support Online LLM for now. Please select Online LLM in the LLM Section.")
+
 
         # Iterate over rows in the original DataFrame
         for index, row in df.iterrows():
@@ -253,27 +316,28 @@ if uploaded_files is not None:
             # For "RecursiveTokenChunker" option, split text from the selected index column into smaller chunks
             elif chunkOption == "RecursiveTokenChunker":
                 chunker = RecursiveTokenChunker(
-                    chunk_size=200
+                    chunk_size=st.session_state.chunk_size,
+                    chunk_overlap=st.session_state.chunk_overlap
+
                 )
                 chunks = chunker.split_text(selected_column_value)
                 
             elif chunkOption == "SemanticChunker":
                 if embedding_option == "TF-IDF":
-                    chunker = ProtonxSemanticChunker(
+                    chunker = SemanticChunker(
                         embedding_type="tfidf",
                     )
                 else:
-                    chunker = ProtonxSemanticChunker(
+                    chunker = SemanticChunker(
                         embedding_type="transformers", 
                         model="all-MiniLM-L6-v2",
                     )
                 chunks = chunker.split_text(selected_column_value)
-            elif chunkOption == "AgenticChunker" and  st.session_state.get("llm_api_key"):
-                chunker = LLMAgenticChunker(
-                    organisation="google", 
-                    model_name="gemini-1.5-pro", 
-                    api_key=st.session_state.get('llm_api_key')
-                )
+            elif chunkOption == "AgenticChunker" and st.session_state.get("llm_choice") == llm_options["Online"]  and st.session_state.get("llm_api_key"):
+                chunker = LLMAgenticChunker(st.session_state.get("llm_model"))
+                chunks = chunker.split_text(selected_column_value)
+            elif chunkOption == "AgenticChunker" and st.session_state.get("llm_choice") == llm_options["Local (Ollama)"] and st.session_state.get("local_llms"):
+                chunker = LLMAgenticChunker(st.session_state.get("local_llms"))
                 chunks = chunker.split_text(selected_column_value)
             # For each chunk, add a dictionary with the chunk and original_id to the list
             for chunk in chunks:
@@ -288,28 +352,38 @@ if uploaded_files is not None:
                 chunk_records.append(chunk_record)
 
         # Convert the list of dictionaries to a DataFrame
-        chunks_df = pd.DataFrame(chunk_records)
-
-        # Display the result
-        st.write("Number of chunks:", len(chunks_df))
-        st.dataframe(chunks_df)
+        st.session_state.chunks_df = pd.DataFrame(chunk_records)
 
 
 
-
-
-
+if "chunks_df" in st.session_state and len(st.session_state.chunks_df) > 0:
+    # Display the result
+    st.write("Number of chunks:", len(st.session_state.chunks_df))
+    st.dataframe(st.session_state.chunks_df)
 
 # Button to save data
 if st.button("Save Data"):
     try:
-        collection = st.session_state.collection
+        # Check if the collection exists, if not, create a new one
+        if st.session_state.collection is None:
+            if uploaded_files:
+                first_file_name = os.path.splitext(uploaded_files[0].name)[0]  # Get file name without extension
+                collection_name = f"rag_collection_{clean_collection_name(first_file_name)}"
+            else:
+                # If no file name is available, generate a random collection name
+                collection_name = f"rag_collection_{uuid.uuid4().hex[:8]}"
+        
+            st.session_state.random_collection_name = collection_name
+            st.session_state.collection = st.session_state.client.get_or_create_collection(
+                name=st.session_state.random_collection_name,
+                metadata={"description": "A collection for RAG system"},
+            )
 
         # Define the batch size
         batch_size = 256
 
         # Split the DataFrame into smaller batches
-        df_batches = divide_dataframe(chunks_df, batch_size)
+        df_batches = divide_dataframe(st.session_state.chunks_df, batch_size)
 
         # Check if the dataframe has data, otherwise show a warning and skip the processing
         if not df_batches:
@@ -326,7 +400,7 @@ if st.button("Save Data"):
                 if batch_df.empty:
                     continue  # Skip empty batches (just in case)
                 
-                process_batch(batch_df, st.session_state.embedding_model, collection)
+                process_batch(batch_df, st.session_state.embedding_model, st.session_state.collection)
 
                 # Update progress dynamically for each batch
                 progress_percentage = int(((i + 1) / num_batches) * 100)
@@ -344,12 +418,40 @@ if st.button("Save Data"):
     except Exception as e:
         st.error(f"Error saving data to Chroma: {str(e)}")
 
-# Show blue tick if data has been saved successfully
-header_i = 1
+# Set up the interface
+st.subheader(f"{header_i}.2. Or load from saved collection", divider=True)
+if st.button("Load from saved collection"):
+    st.session_state.open_dialog = "LIST_COLLECTION"
+    def load_func(collection_name):
+        st.session_state.collection = st.session_state.client.get_collection(
+            name=collection_name
+        )
+        st.session_state.random_collection_name = collection_name
+        st.session_state.data_saved_success = True
+        st.session_state.source_data = DB
+        data = st.session_state.collection.get(
+            include=[
+                "documents", 
+                "metadatas"
+            ],
+        )
+        metadatas = data["metadatas"]
+        column_names = []
+        if len(metadatas) > 0 and len(metadatas[0].keys()) > 0:
+            column_names.extend(metadatas[0].keys())
+            column_names = list(set(column_names))
+
+        st.session_state.chunks_df = pd.DataFrame(metadatas, columns=column_names)
+
+    def delete_func(collection_name):
+        st.session_state.client.delete_collection(name=collection_name)
+    
+    list_collection(st.session_state, load_func, delete_func)
+        
+
+header_i += 1
 header_text = "{}. Setup data ✅".format(header_i) if st.session_state.data_saved_success else "{}. Setup data".format(header_i)
 st.header(header_text)
-
-
 
 if st.session_state.data_saved_success:
     st.markdown("✅ **Data Saved Successfully!**")
@@ -358,10 +460,10 @@ if st.session_state.data_saved_success:
 
 
 # Step 3: Define which columns LLMs should answer from
-if uploaded_files:
+if "random_collection_name" in st.session_state and st.session_state.random_collection_name is not None and st.session_state.chunks_df is not None:
     st.session_state.columns_to_answer = st.multiselect(
         "Select one or more columns LLMs should answer from (multiple selections allowed):", 
-        df.columns
+        st.session_state.chunks_df.columns
     )
 
 # Step 2: Setup LLMs (Gemini Only)
@@ -369,13 +471,13 @@ header_i += 1
 header_text_llm = "{}. Setup LLMs".format(header_i)
 st.header(header_text_llm)
 # Example user selection
-llm_choice = st.selectbox(
-        "Choose Model Source:", 
-        ["Online", "Local (Ollama)"],
-        index=1,
-    )
-
-if llm_choice == "Online":
+st.selectbox(
+    "Choose Model Source:", 
+    ["Online", "Local (Ollama)"],
+    index=list(llm_options.values()).index(llm_options["Local (Ollama)"]),
+    key="llm_choice"
+)
+if st.session_state.get("llm_choice") == llm_options["Online"]:
     # Initialize a variable for tracking if the API key was entered successfully
     api_key_success = False
     st.session_state.llm_type = ONLINE_LLM
@@ -396,21 +498,22 @@ if llm_choice == "Online":
     st.text_input(
         "Enter your API Key:", 
         type="password", 
-        key="llm_api_key") 
-
+        key="llm_api_key",
+        value=os.getenv("GEMINI_API_KEY") if st.session_state.llm_name == GEMINI else os.getenv("OPENAI_API_KEY"),
+    ) 
     if st.session_state.get('llm_api_key'):
         st.success("API Key saved successfully!")
         if st.session_state.llm_name == GEMINI:
             st.session_state.llm_model = OnlineLLMs(
                 name=GEMINI,
                 api_key=st.session_state.get('llm_api_key'),
-                model_version="gemini-1.5-pro"
+                model_version="gemini-1.5-flash"
                 )
         elif st.session_state.llm_name == OPENAI:
             st.session_state.llm_model = OnlineLLMs(
                 name=OPENAI,
                 api_key=st.session_state.get('llm_api_key'),
-                model_version="gpt-4o"
+                model_version="gpt-4o",
                 )
         else:
             st.warning("Please select a model to run.")
@@ -420,7 +523,7 @@ if llm_choice == "Online":
     # Show blue tick if API key was entered successfully
     if api_key_success:
         st.markdown("✅ **API Key Saved Successfully!**")
-elif llm_choice == "Local (Ollama)":
+elif st.session_state.get("llm_choice") == llm_options["Local (Ollama)"]:
     st.markdown("Please install and run [Docker](https://docs.docker.com/engine/install/) before running Ollama locally.")
     # Install and run Ollama Docker container based on hardware
     if st.button("Initialize Ollama Container"):
@@ -476,36 +579,56 @@ header_text = "{}. [Experimental] Graph RAG".format(header_i)
 st.header(header_text)
 
 # Display graph
+
+def update_graph_query():
+    st.session_state.graph_query = st.session_state.temp_graph_query
+
 if st.button("Extract Graph"):
     if not st.session_state.get("llm_api_key"):
         notify("You have to setup the API KEY FIRST in the Setup LLM Section", "error")
     else:
         if st.session_state.llm_type == ONLINE_LLM:
             if st.session_state.llm_name == GEMINI:
-                llm_model = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-pro",
+                llm_model_for_graph_rag = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
                     google_api_key=st.session_state.get("llm_api_key")
                 )
             elif st.session_state.llm_name == OPENAI:
 
-                llm_model = ChatOpenAI(
+                llm_model_for_graph_rag = ChatOpenAI(
                     model="gpt-4o",
                     openai_api_key=st.session_state.get("llm_api_key")
                 )
                 
-            rag = GraphRAG(
-                llm_model
-            )
+            st.session_state.graph_rag = GraphRAG(llm_model_for_graph_rag)
 
             langchain_documents = [
-                langchainDocument(page_content=chunk) 
-                for chunk in chunks_df['chunk'].tolist()]
-        
-            rag.create_graph(langchain_documents)
-            rag.visualize_graph()
+                langchainDocument(
+                    page_content=
+                    (
+                        f"{row['chunk']}"
+                    )
+                ) 
+                for _, row in st.session_state.chunks_df.iterrows()
+            ]
+            
+            st.session_state.graph_rag.create_graph(langchain_documents)
+
+            # e_r = st.session_state.graph_rag.extract_entities_and_relationships()
         else:
-            st.error("Only support online model for now.")
-    # st.graph(rag.graph)
+            notify("Only support online model for now.", "error")
+
+if "graph_rag" in st.session_state and st.session_state.graph_rag is not None:
+    graph_query = st.text_area(
+        "Graph Query",
+        st.session_state.graph_query,
+        key="temp_graph_query",
+        on_change=update_graph_query
+    )
+
+    if st.button("Visualize Graph"):
+        data = st.session_state.graph_rag.query_graph(graph_query)
+        st.session_state.graph_rag.visualize_graph(data)
 
 header_i += 1
 header_text_llm = "{}. Set up search algorithms".format(header_i)

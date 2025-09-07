@@ -7,6 +7,8 @@ import json
 import os
 from dotenv import load_dotenv
 import os
+from .base import LLM
+import backoff
 
 # Load environment variables from .env file
 load_dotenv()
@@ -17,7 +19,9 @@ ollama_endpoint = os.getenv('OLLAMA_ENDPOINT') or "http://localhost:11434"
 
 # Available models with command and details
 OLLAMA_MODEL_OPTIONS = {
-
+    "DeepSeek R1 1.5B": "deepseek-r1:5b",
+    "DeepSeek R1 7B": "deepseek-r1:7b",
+    "DeepSeek R1 14B": "deepseek-r1:14b",
     "Llama 3.2 (3B - 2.0GB)": "llama3.2",
     "Llama 3.2 (1B - 1.3GB)": "llama3.2:1b",
     "Llama 3.1 (8B - 4.7GB)": "llama3.1",
@@ -135,7 +139,7 @@ def run_ollama_container(
         st.code(f"docker run -d -v ollama:/root/.ollama -p 11434:11434 --name {container_name} ollama/ollama")
 
 
-class LocalLlms:
+class LocalLlms(LLM):
     def __init__(self, model_name, position_noti="content"):
         self.model_name = model_name
         self.base_url = ollama_endpoint
@@ -159,7 +163,7 @@ class LocalLlms:
         else:
             st.sidebar.success(f"Model {self.model_name} pulled successfully.")
 
-    def chat(self, messages):
+    def chat(self, messages, options=None):
         """Send messages to the model and return the assistant's response."""
         try:
             data = {
@@ -167,6 +171,8 @@ class LocalLlms:
                 "messages": messages,  
                 "stream": False,       
             }
+            if options:
+                data["options"] = options
 
             response = requests.post(
                 f"{self.base_url}/api/chat",
@@ -200,6 +206,20 @@ class LocalLlms:
         except Exception as e:
             print(f"Error: {e}")
             return None
+    @backoff.on_exception(backoff.expo, Exception, max_tries=3)
+    def create_agentic_chunker_message(self, system_prompt, messages, max_tokens=1000, temperature=1):
+        try:
+            ollama_messages = [
+                {"role": "system", "content": system_prompt}
+            ] + messages
+
+            response = self.chat(ollama_messages, {"temperature": temperature, "num_ctx": max_tokens})
+            return response.get("content")
+            
+        except Exception as e:
+            print(f"Error occurred: {e}, retrying...")
+            raise e
+        
         
     def generate_content(self, prompt):
         data = {
