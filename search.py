@@ -1,4 +1,6 @@
 import numpy as np
+from sentence_transformers import SentenceTransformer
+
 # Define a helper function for formatting retrieved data
 def vector_search(model, query, collection, columns_to_answer, number_docs_retrieval ):
     query_embeddings = model.encode([query])
@@ -104,4 +106,44 @@ def hyde_search(llm_model, encoder_model, query, collection, columns_to_answer, 
                 search_result += f" {column.capitalize()}: {meta.get(column)}"
 
         search_result += "\n"
+    return metadatas, search_result
+def semantic_search(query, collection, columns_to_answer, number_docs_retrieval, model_name="all-MiniLM-L6-v2"):
+    """
+    Perform semantic search using sentence transformers embedding model.
+    
+    Parameters:
+        query (str): The search query
+        collection: The ChromaDB collection to search in
+        columns_to_answer (list): List of metadata columns to include in results
+        number_docs_retrieval (int): Number of documents to retrieve
+        model_name (str): Name of the sentence transformer model to use
+    
+    Returns:
+        tuple: (metadatas, formatted_search_result)
+    """
+    # Initialize the semantic embedding model
+    semantic_model = SentenceTransformer(model_name)
+    
+    # Generate query embedding
+    query_embedding = semantic_model.encode([query])
+    
+    # Perform the search
+    search_results = collection.query(
+        query_embeddings=query_embedding,
+        n_results=number_docs_retrieval
+    )
+    
+    # Format the results
+    search_result = ""
+    metadatas = search_results['metadatas']
+    
+    i = 0
+    for meta in metadatas[0]:
+        i += 1
+        search_result += f"\n{i})"
+        for column in columns_to_answer:
+            if column in meta:
+                search_result += f" {column.capitalize()}: {meta.get(column)}"
+        search_result += "\n"
+    
     return metadatas, search_result

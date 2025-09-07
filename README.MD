@@ -1,3 +1,5 @@
+## Original Repo
+https://github.com/bangoc123/drop-rag.git
 ## Features
 1. **Flexible File Upload** – Supports uploading CSV, JSON, PDF, and DOCX files, allowing users to choose which columns or sections to index.
 2. **Chroma-based Storage and Retrieval** – Uses **Chroma** to store vector embeddings and perform efficient vector-based searches.

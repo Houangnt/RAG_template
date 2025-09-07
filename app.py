@@ -9,7 +9,7 @@ import google.generativeai as genai
 from IPython.display import Markdown
 from chunking import RecursiveTokenChunker, LLMAgenticChunker, SemanticChunker
 from utils import process_batch, divide_dataframe, clean_collection_name
-from search import vector_search, keywords_search, hyde_search
+from search import vector_search, keywords_search, hyde_search, semantic_search
 from llms.localLllms import run_ollama_container, run_ollama_model, OLLAMA_MODEL_OPTIONS, GGUF_MODEL_OPTIONS
 from llms.onlinellms import OnlineLLMs
 import time
@@ -638,11 +638,13 @@ st.radio(
     "Please select one of the options below.",
     [
         # "Keywords Search", 
-        "Vector Search", 
+        "Vector Search",
+        "Semantic Search", 
         "Hyde Search"],
     captions = [
         # "Search using traditional keyword matching",
         "Search using vector similarity",
+        "Search using semantic embeddings with all-MiniLM-L6-v2",
         "Search using the HYDE algorithm"
     ],
     key="search_option",
@@ -745,6 +747,16 @@ if prompt := st.chat_input("What is up?"):
                         st.session_state.number_docs_retrieval
                     )
 
+                    enhanced_prompt = """The prompt of the user is: "{}". Answer it based on the following retrieved data: \n{}""".format(prompt, retrieved_data)
+                
+                elif st.session_state.search_option == "Semantic Search":
+                    metadatas, retrieved_data = semantic_search(
+                        prompt,
+                        st.session_state.collection,
+                        st.session_state.columns_to_answer,
+                        st.session_state.number_docs_retrieval,
+                        model_name="all-MiniLM-L6-v2"
+                    )
                     enhanced_prompt = """The prompt of the user is: "{}". Answer it based on the following retrieved data: \n{}""".format(prompt, retrieved_data)
 
                 elif st.session_state.search_option == "Hyde Search":

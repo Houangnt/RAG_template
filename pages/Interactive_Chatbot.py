@@ -1,7 +1,7 @@
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 import pandas as pd
-from search import vector_search, keywords_search, hyde_search
+from search import vector_search, keywords_search, hyde_search, semantic_search
 from constant import USER, ASSISTANT, ONLINE_LLM, LOCAL_LLM
 import chromadb
 import json
@@ -102,6 +102,15 @@ if prompt := st.chat_input("What is up?"):
                     st.session_state.collection,
                     columns_to_answer,
                     st.session_state.number_docs_retrieval
+                )
+
+            elif search_option == "Semantic Search":
+                metadatas, retrieved_data = semantic_search(
+                    prompt,
+                    st.session_state.collection,
+                    columns_to_answer,
+                    st.session_state.number_docs_retrieval,
+                    model_name="all-MiniLM-L6-v2"
                 )
 
             elif search_option == "Hyde Search":
